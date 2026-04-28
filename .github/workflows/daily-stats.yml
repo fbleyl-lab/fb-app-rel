@@ -2,8 +2,9 @@ name: Tägliche Download-Stats
 
 # Lauft jeden Tag um 7:00 UTC (~9:00 deutsche Zeit) UND manuell ueber den
 # "Run workflow"-Button im Actions-Tab. Erstellt ein Issue mit den Download-
-# Zahlen pro Release. Wenn du dieses Repo abonniert hast (Watch -> All Activity)
-# bekommst du automatisch eine Mail mit dem Inhalt.
+# Zahlen pro Release, aufgeschluesselt nach Asset-Typ. Wenn du dieses Repo
+# abonniert hast (Watch -> Custom -> Issues), bekommst du automatisch eine
+# Mail mit dem Inhalt.
 on:
   schedule:
     - cron: '0 7 * * *'
@@ -22,7 +23,6 @@ jobs:
         with:
           script: |
             const { owner, repo } = context.repo
-            // Alle Releases holen (paginated, aber bei wenigen Versionen reicht das)
             const releases = await github.paginate(
               github.rest.repos.listReleases,
               { owner, repo, per_page: 100 }
@@ -31,21 +31,37 @@ jobs:
               console.log('Keine Releases vorhanden — kein Issue.')
               return
             }
+            // Hilfsfunktion: Asset-Typ erkennen
+            const classify = (name) => {
+              const n = name.toLowerCase()
+              if (n.endsWith('.exe')) return 'exe'
+              if (n.endsWith('.blockmap')) return 'blockmap'
+              if (n.endsWith('.yml') || n.endsWith('.yaml')) return 'yml'
+              return 'other'
+            }
             // Stats-Tabelle bauen
             let body = `# 📊 Tägliche Download-Stats\n\n`
             body += `**Zeitpunkt:** ${new Date().toISOString().replace('T', ' ').slice(0, 16)} UTC\n\n`
-            body += `| Version | Veröffentlicht | Downloads (gesamt) |\n`
-            body += `|---|---|---|\n`
-            let totalDl = 0
+            body += `**Lesehilfe:**\n`
+            body += `- 📦 **Installer (.exe)** — echte Installationen / Auto-Updates\n`
+            body += `- 🔄 **Manifest (.yml)** — Polling-Aktivität (alle 5 Min pro laufender App)\n`
+            body += `- 📐 **Delta-Map (.blockmap)** — wird beim Auto-Update mitgezogen\n\n`
+            body += `| Version | Veröffentlicht | 📦 Installer | 🔄 Manifest | 📐 Delta-Map | Sonstiges |\n`
+            body += `|---|---|---:|---:|---:|---:|\n`
+            let totals = { exe: 0, yml: 0, blockmap: 0, other: 0 }
             for (const rel of releases) {
-              // Pro Release alle Assets aufaddieren — der NSIS-Setup interessiert,
-              // .blockmap-Aufrufe sind Delta-Updates und zählen auch dazu
-              const assetDl = (rel.assets || []).reduce((sum, a) => sum + (a.download_count || 0), 0)
-              totalDl += assetDl
+              const counts = { exe: 0, yml: 0, blockmap: 0, other: 0 }
+              for (const a of (rel.assets || [])) {
+                const t = classify(a.name)
+                counts[t] += a.download_count || 0
+              }
+              for (const k of Object.keys(totals)) totals[k] += counts[k]
               const date = rel.published_at ? rel.published_at.slice(0, 10) : '–'
-              body += `| **${rel.tag_name}** | ${date} | ${assetDl} |\n`
+              body += `| **${rel.tag_name}** | ${date} | ${counts.exe} | ${counts.yml} | ${counts.blockmap} | ${counts.other} |\n`
             }
-            body += `\n**Gesamtdownloads:** ${totalDl}\n\n`
+            body += `\n**Gesamt:** 📦 ${totals.exe} Installer · 🔄 ${totals.yml} Manifest-Aufrufe · 📐 ${totals.blockmap} Delta-Maps`
+            if (totals.other > 0) body += ` · ${totals.other} sonstige`
+            body += `\n\n`
             body += `<sub>Auto-generiert vom \`daily-stats\`-Workflow. Antworten/Kommentare bitte hier ignorieren.</sub>\n`
 
             const today = new Date().toISOString().slice(0, 10)
