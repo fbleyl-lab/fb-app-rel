@@ -1,0 +1,57 @@
+name: Tägliche Download-Stats
+
+# Lauft jeden Tag um 7:00 UTC (~9:00 deutsche Zeit) UND manuell ueber den
+# "Run workflow"-Button im Actions-Tab. Erstellt ein Issue mit den Download-
+# Zahlen pro Release. Wenn du dieses Repo abonniert hast (Watch -> All Activity)
+# bekommst du automatisch eine Mail mit dem Inhalt.
+on:
+  schedule:
+    - cron: '0 7 * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  stats:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download-Stats sammeln und Issue erstellen
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo
+            // Alle Releases holen (paginated, aber bei wenigen Versionen reicht das)
+            const releases = await github.paginate(
+              github.rest.repos.listReleases,
+              { owner, repo, per_page: 100 }
+            )
+            if (!releases.length) {
+              console.log('Keine Releases vorhanden — kein Issue.')
+              return
+            }
+            // Stats-Tabelle bauen
+            let body = `# 📊 Tägliche Download-Stats\n\n`
+            body += `**Zeitpunkt:** ${new Date().toISOString().replace('T', ' ').slice(0, 16)} UTC\n\n`
+            body += `| Version | Veröffentlicht | Downloads (gesamt) |\n`
+            body += `|---|---|---|\n`
+            let totalDl = 0
+            for (const rel of releases) {
+              // Pro Release alle Assets aufaddieren — der NSIS-Setup interessiert,
+              // .blockmap-Aufrufe sind Delta-Updates und zählen auch dazu
+              const assetDl = (rel.assets || []).reduce((sum, a) => sum + (a.download_count || 0), 0)
+              totalDl += assetDl
+              const date = rel.published_at ? rel.published_at.slice(0, 10) : '–'
+              body += `| **${rel.tag_name}** | ${date} | ${assetDl} |\n`
+            }
+            body += `\n**Gesamtdownloads:** ${totalDl}\n\n`
+            body += `<sub>Auto-generiert vom \`daily-stats\`-Workflow. Antworten/Kommentare bitte hier ignorieren.</sub>\n`
+
+            const today = new Date().toISOString().slice(0, 10)
+            const title = `📊 Download-Stats vom ${today}`
+
+            await github.rest.issues.create({
+              owner, repo, title, body,
+              labels: ['stats']
+            })
